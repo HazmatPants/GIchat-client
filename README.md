@@ -8,6 +8,8 @@ A lightweight chat client for GIchat. Built with PyQt5, WebSockets and Flask (HT
 - Markdown support
 - HTML formatting support
 - File sharing
+  
+[TO-DOs and current work](TODOS.md)
 
 # Gallery
 ![alt text](https://hazmatpants.github.io/images/gichat_funny.png)
