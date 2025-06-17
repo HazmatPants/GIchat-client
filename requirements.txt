@@ -1,7 +1,7 @@
-asyncio==3.4.3
-colorama==0.4.6
-scapy==2.6.0
-setuptools==78.1.0
--e git+https://github.com/HazmatPants/shredpy.git@a4860b851eaf97c741c5b90e502d550ab2809ca7#egg=shredpy
-tqdm==4.67.1
-websockets==14.2
+PyQt5
+Pillow
+ping3
+pygame
+websockets
+toml
+markdown

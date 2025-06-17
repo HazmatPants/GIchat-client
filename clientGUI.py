@@ -1,569 +1,652 @@
-from tkinter import messagebox, filedialog, ttk
-import tkinter as tk # for GUI
-
-from PIL import Image, ImageTk
-from ping3 import ping # for pinging the server
+import sys
+import asyncio
+import threading
+import os
+import json
+import time
+import random
+import base64
+import traceback
+import markdown
+import requests
+import uuid
+import websockets
+import toml
+import webbrowser
 from datetime import datetime
-import time # for timestamps
-import asyncio # for async functions
-import websockets # for communication with the server
-import threading # for running multiple functions at once
-import json # for sending multiple values to the server
-import os # for force-exit
-import random # for random numbers
-from pygame import mixer # for sound effects
-import base64 # for encoding image data
-import toml # for config files
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QPushButton, QTextEdit, QLabel,
+                             QVBoxLayout, QHBoxLayout, QFileDialog, QMessageBox, QLineEdit, QDialog,
+                             QProgressBar, QMenuBar, QAction, QGridLayout, QLayout)
+from PyQt5.QtGui import QIcon, QPixmap, QTextCursor, QFont, QTextDocument
+from PyQt5.QtCore import Qt, pyqtSignal, QObject, QTimer, QCoreApplication, QEventLoop, QMetaObject, QUrl
+from PIL import Image
+from ping3 import ping
+from pygame import mixer
 
 mixer.init()
 
-with open("latest.log", "w") as f:
-        f.write("")
+# === Config and Logging ===
+CLI_VERSION = "2.1.2"
+CLI_DIR = os.path.dirname(__file__)
+os.chdir(CLI_DIR)
 
-def b64encode(path):
-    with open(path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode("utf-8")
-        return encoded
+LOG_FILE = os.path.join(CLI_DIR, "latest.log")
+CONFIG_FILE = os.path.join(CLI_DIR, "config.toml")
 
-def b64decode(b64string: str):
-    return base64.b64decode(b64string)
+with open(LOG_FILE, "w") as f:
+    f.write("")
 
-def log(text: str):
-    print(text)
-    with open("latest.log", "a") as f:
-        f.writelines(text + "\n")
+def log(msg):
+    print(msg)
+    with open(LOG_FILE, "a") as f:
+        f.write(msg + "\n")
 
-def save_config(data: dict):
-    with open("config.toml", "w") as f:
+def save_config(data):
+    with open(CONFIG_FILE, "w") as f:
         toml.dump(data, f)
 
-def load_config() -> dict:
+def load_config():
     try:
-        data = toml.loads(open("config.toml", "r").read())
+        data = toml.load(CONFIG_FILE)
         log("Config Loaded")
         return data
     except toml.TomlDecodeError:
         log("Invalid Config TOML")
-        messagebox.showerror(title="TOML Decode Error", message="Config contains invalid TOML, please check for any mistakes in config.toml or delete it to generate a new config file")
-        os._exit(0)
+        QMessageBox.critical(None, "TOML Decode Error",
+                             "Config file contains invalid TOML. Fix the issues or delete it to generate a new one.")
+        sys.exit()
     except FileNotFoundError:
-        log("Config file missing")
+        log("Config file missing, using defaults")
         data = {
             "client": {
-                "username": f"NewUser_{str(random.randint(1,10000))}",
-                "font": {
-                    "name": "Helvetica",
-                    "size": 10
-                    },
-                "admin_key": ""
+                "username": f"NewUser_{random.randint(1, 1000000)}",
+                "font": {"name": "Helvetica", "size": 10},
+                "admin_key": "",
+                "soundpack": "gichat"
             },
             "server": {
-                "host": "gichat.ydns.eu",
-                "port": 8765,
+                "host": "grigga-industries.ydns.eu",
+                "port": 8765
             }
         }
-        
         save_config(data)
-        
-        messagebox.showerror(title="No Config?", message="Config file is missing, please edit the newly created config.toml")
-        
-        os._exit(0)
+        return data
 
-formatted_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-log(f"// {formatted_time} //")
+# === Utility ===
+def playsound(path):
+    mixer.Sound(path).play()
 
-CLI_VERSION = "1.5.1"
-CLI_CONFIG = load_config()
-CLI_DIR = os.path.dirname(__file__)
-os.chdir(CLI_DIR)
+def playerror():
+    errorSoundPath = os.path.join("assets", "sounds", "error.wav")
+    if os.path.exists(errorSoundPath):
+        playsound(errorSoundPath)
 
-def playsound(sound: str):
-    mixer.Sound(sound).play()
-
-def playeventsound(event: str):
-    sound = "assets/sounds/" + event + ".wav"
-    playsound(sound)
-
-host = CLI_CONFIG["server"]["host"]
-port = CLI_CONFIG["server"]["port"]
-username = CLI_CONFIG["client"]["username"]
-
-# Initialize Tkinter
-root = tk.Tk()
-root.title(f"GI.𝘤𝘩𝘢𝘵 Client {CLI_VERSION}")
-root.geometry("900x500")
-root.grid_columnconfigure(1, weight=1)  # Allow text widget to expand
-root.grid_rowconfigure(0, weight=1)     # Allow window resizing
-root.configure(bg="black")
-log("Tkinter Initialized")
-
-# Global Variables
-websocket = None
-loop = None
-asyncio_thread = None
-shutdown_flag = False # if this is True, program and threads will shutdown
-
-def open_config():
-    window = tk.Toplevel(root)
-    window.title("Config")
-    window.geometry("300x300")
-    window.configure(bg="black")
-    window.attributes("-topmost", True)
-    window.resizable(False, False)
-    
-    label_host = tk.Label(window, text="Host (IP)", bg="black", fg="#ffffff")
-    entry_host = tk.Entry(window, bg="#232323", fg="#ffffff")
-    label_port = tk.Label(window, text="Port", bg="black", fg="#ffffff")
-    entry_port = tk.Entry(window, bg="#232323", fg="#ffffff")
-    label_name = tk.Label(window, text="Username", bg="black", fg="#ffffff")
-    entry_name = tk.Entry(window, bg="#232323", fg="#ffffff")
-    label_font_name = tk.Label(window, text="Font Name", bg="black", fg="#ffffff")
-    entry_font_name = tk.Entry(window, bg="#232323", fg="#ffffff")
-    label_font_size = tk.Label(window, text="Font Size", bg="black", fg="#ffffff")
-    entry_font_size = tk.Entry(window, bg="#232323", fg="#ffffff")
-    label_admin_key = tk.Label(window, text="Admin Key", bg="black", fg="#ffffff")
-    entry_admin_key = tk.Entry(window, bg="#232323", fg="#ffffff", show="*")  # Hide key input
-
-    # load current config into entries
-    entry_host.insert(0, CLI_CONFIG["server"]["host"])
-    entry_port.insert(0, CLI_CONFIG["server"]["port"])
-    entry_name.insert(0, CLI_CONFIG["client"]["username"])
-    entry_font_name.insert(0, CLI_CONFIG["client"]["font"]["name"])
-    entry_font_size.insert(0, CLI_CONFIG["client"]["font"]["size"])
-    entry_admin_key.insert(0, CLI_CONFIG["client"]["admin_key"])
-    
-    def save_user_config():
-        data = {
-            "client": {
-                "username": str(entry_name.get().strip()),
-                "font": {
-                    "name": str(entry_font_name.get().strip()),
-                    "size": int(entry_font_size.get().strip())
-                    },
-                "admin_key": str(entry_admin_key.get().strip())
-            },
-            "server": {
-                "host": str(entry_host.get().strip()),
-                "port": int(entry_port.get().strip()),
-            }
-        }
-
-        save_config(data)
-        messagebox.showinfo(title="Saved Config", message="Config was successfully saved\nA restart is required for changes to apply.")
-        asyncio.run_coroutine_threadsafe(client_exit(), loop)
-    
-    button_save = tk.Button(window, text="Save", width=8, bg="#232323", fg="#ffffff",
-                            command=save_user_config)
-    
-    label_host.pack()
-    entry_host.pack()
-    label_port.pack()
-    entry_port.pack()
-    label_name.pack()
-    entry_name.pack()
-    label_font_name.pack()
-    entry_font_name.pack()
-    label_font_size.pack()
-    entry_font_size.pack()
-    label_admin_key.pack()
-    entry_admin_key.pack()
-    
-    button_save.pack(pady=16)
-
-# Function to print messages to the text console
-def consoleprint(text: str, image: tk.PhotoImage=None):
-    text = text.strip()
-    def updateconsole():
-        text_console.config(state=tk.NORMAL)
-        text_console.insert(tk.END, text + "\n")
-        if image:
-            text_console.image_create(tk.END, image=image)
-            text_console.insert(tk.END, "\n")
-        text_console.update()
-        text_console.config(state=tk.DISABLED)
-    
-    root.after(0, updateconsole)
-    text_console.see(tk.END)
-
-def load_messages(messages):
-    window = tk.Toplevel(root)
-    window.title("Loading...")
-    window.geometry("350x150")
-    window.configure(bg="black")
-    window.attributes("-topmost", True)
-    window.resizable(False, False) 
-    window.grab_set()
-    loading_label = tk.Label(window, text="Loading Messages", bg="#000000", fg="#ffffff")
-    loading_label.pack(pady=10)
-    progress_bar = ttk.Progressbar(window, length=300, mode="determinate")
-    progress_bar['maximum'] = len(messages)
-    progress_bar['value'] = 0
-    progress_bar.pack(pady=10)
-    
-    console_clear()
-    for idx, message in enumerate(messages):
-        username, content, timestamp = message
-        formatted_message = f"[{timestamp}] <{username}> {content.strip()}"
-        consoleprint(formatted_message)
-        progress_bar['value'] = idx + 1
-        window.update_idletasks()
-    window.destroy()
-
-# Function to ping the server
-def pingserver() -> float:
-    responsetime = ping(dest_addr=host)
-    if responsetime is None or responsetime is False:
-        consoleprint("Ping Failed")
-        messagebox.showerror(title="Ping Failed", message="Host unreachable")
+def playeventsound(event):
+    path = os.path.join("assets", "sounds", CLI_CONFIG["client"]["soundpack"], f"{event}.wav")
+    if os.path.exists(path):
+        playsound(path)
     else:
-        consoleprint(f"Ping Success: {str(round(responsetime, 3) * 1000)}ms")
-        print("ping success:", responsetime)
-        messagebox.showinfo(title="Ping Sucessful", message="Response Time: " + str(round(responsetime, 3) * 1000) + "ms")
+        log(f"sound `{path}` not found!")
+        playerror()
 
-menubar = tk.Menu(root)
-root.config(menu=menubar)
+def b64encode(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
 
-def showcredits():
-    messagebox.showinfo(title="Credits", message="Made by GI\nWritten in Python 3.10\nSound effects from AIM and Valve")
+def b64decode(b64string):
+    return base64.b64decode(b64string)
 
-async def disconnect(silent: bool=False):
-    global websocket
-    
-    if websocket:
+def markdown_to_html(markdown_text):
+    html_output = markdown.markdown(markdown_text)
+    return html_output
+
+# === Async Communication Handler ===
+class Communicator(QObject):
+    print_to_console = pyqtSignal(str, object)
+    load_messages = pyqtSignal(list)
+    show_conf = pyqtSignal()
+    clear_console = pyqtSignal()
+
+class ConfigWindow(QMainWindow):
+    def __init__(self, chat_client):
+        super().__init__()
+        
+        self.chat = chat_client
+        self.loop = asyncio.get_event_loop()
+        self.setWindowTitle("Configuration")
+        self.setFixedSize(350, 300)
+        self.setStyleSheet("background-color: black; color: white;")
+        self.setWindowFlag(Qt.WindowStaysOnTopHint)
+        
+        layout = QGridLayout()
+        
+        self.username_label = QLabel("Username:", self)
+        layout.addWidget(self.username_label, 1, 0)
+        self.username_field = QLineEdit(self)
+        layout.addWidget(self.username_field, 1, 1)
+        self.username_field.setText(CLI_CONFIG["client"]["username"])
+        
+        self.soundpack_label = QLabel("Sound Pack:", self)
+        layout.addWidget(self.soundpack_label, 2, 0)
+        self.soundpack_field = QLineEdit(self)
+        layout.addWidget(self.soundpack_field, 2, 1)
+        self.soundpack_field.setText(CLI_CONFIG["client"]["soundpack"])
+        
+        self.adminkey_label = QLabel("Admin Key:", self)
+        layout.addWidget(self.adminkey_label, 3, 0)
+        self.adminkey_field = QLineEdit(self)
+        layout.addWidget(self.adminkey_field, 3, 1)
+        self.adminkey_field.setText(CLI_CONFIG["client"]["admin_key"])
+        self.adminkey_field.setEchoMode(QLineEdit.EchoMode.Password)
+
+        self.seperator1 = QWidget(self)
+        self.seperator1.setMaximumHeight(20)
+        layout.addWidget(self.seperator1, 4, 0)
+        
+        self.font_name_label = QLabel("Font Name:", self)
+        layout.addWidget(self.font_name_label, 5, 0)
+        self.font_name_field = QLineEdit(self)
+        layout.addWidget(self.font_name_field, 5, 1)
+        self.font_name_field.setText(CLI_CONFIG["client"]["font"]["name"])
+        
+        self.font_size_label = QLabel("Font Size:", self)
+        layout.addWidget(self.font_size_label, 6, 0)
+        self.font_size_field = QLineEdit(self)
+        layout.addWidget(self.font_size_field, 6, 1)
+        self.font_size_field.setText(str(CLI_CONFIG["client"]["font"]["size"]))
+
+        self.seperator2 = QWidget(self)
+        self.seperator2.setMaximumHeight(20)
+        layout.addWidget(self.seperator2, 7, 0)
+        
+        self.host_label = QLabel("Host:", self)
+        layout.addWidget(self.host_label, 8, 0)
+        self.host_field = QLineEdit(self)
+        layout.addWidget(self.host_field, 8, 1)
+        self.host_field.setText(CLI_CONFIG["server"]["host"])
+        
+        self.port_label = QLabel("Port:", self)
+        layout.addWidget(self.port_label, 9, 0)
+        self.port_field = QLineEdit(self)
+        layout.addWidget(self.port_field, 9, 1)
+        self.port_field.setText(str(CLI_CONFIG["server"]["port"]))
+        
+        self.seperator3 = QWidget(self)
+        self.seperator3.setMaximumHeight(20)
+        layout.addWidget(self.seperator3, 10, 0)
+        
+        self.save_button = QPushButton("Save", self)
+        self.save_button.setStyleSheet("background-color: #424242; color: white; border-radius: 1px; padding: 8px 10px;")
+        self.save_button.clicked.connect(self.save_config_window)
+        layout.addWidget(self.save_button, 11, 0)
+        
+        layout.setAlignment(Qt.AlignHCenter)
+        container = QWidget()
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+        
+    def save_config_window(self):
+        self.error = False
         try:
-            await websocket.close(reason="Client Disconnect")
-        except Exception as e:
-            log(f"Error closing WebSocket: {e}")
-            consoleprint(f"Error closing WebSocket: {e}")
-        finally:
-            websocket = None
-            
-        if not silent:
-            playeventsound("disconnect")
+            data = {
+                "client": {
+                    "username": self.username_field.text(),
+                    "font": {"name": self.font_name_field.text(), "size": int(self.font_size_field.text())},
+                    "admin_key": self.adminkey_field.text(),
+                    "soundpack": self.soundpack_field.text()
+                },
+                "server": {
+                    "host": self.host_field.text(),
+                    "port": self.port_field.text()
+                }
+            }
+        except ValueError as e:
+            QMessageBox.critical(self, "Error", str(e))
+            self.error = True
         
-        consoleprint("Disconnected.")
-    else:
-        consoleprint("Error: Not connected to a server")
+        if not self.error:
+            save_config(data)
+            QMessageBox.information(self, "Changes require restart", "Client will now exit to apply changes.")
+            self.destroy()
+            exit()
 
-async def client_exit():
-    global shutdown_flag
-    shutdown_flag = True  
+class LoadingWindow(QMainWindow):
+    def __init__(self, messages, chat_client):
+        super().__init__()
 
-    try:
-        asyncio.create_task(disconnect())
-    except Exception as e:
-        consoleprint(f"Error during exit: {e}")
+        self.chat = chat_client
+        self.messages = messages
+        self.setWindowTitle("Loading...")
+        self.setStyleSheet("background-color: black;")
+        self.setWindowFlag(Qt.WindowStaysOnTopHint)
+        self.setFixedSize(350, 150)
+
+        layout = QVBoxLayout()
+
+        self.loading_label = QLabel("Loading Messages...", self)
+        self.loading_label.setStyleSheet("color: white;")
+        layout.addWidget(self.loading_label)
+        
+        self.progress = QProgressBar(self)
+        self.progress.setStyleSheet("QProgressBar {color: white; background-color: #333;} QProgressBar::chunk {background-color: #05B8CC;}")
+        self.progress.setMaximum(len(self.messages))
+        self.progress.setValue(0)
+        layout.addWidget(self.progress)
+
+        container = QWidget(self)
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+
+        self.idx = 0
+        
+        self.chat.clear_console()
+        
+        QTimer.singleShot(0, self.process_messages)
+
+    def process_messages(self):
+        for self.idx, message in enumerate(self.messages):
+            message = self.messages[self.idx]
+            username, content, timestamp = message
+            if content.startswith("[Image] http"):
+                url = content.split(" ", 1)[1]
+                try:
+                    image_req = requests.get(url)
+                    if image_req.ok:
+                        image_data = image_req.content
+                        pixmap = QPixmap()
+                        pixmap.loadFromData(image_data)
+                        pixmap = pixmap.scaledToWidth(300, Qt.SmoothTransformation)
+                        self.chat.comm.print_to_console.emit(f"[{timestamp}] &lt;{username}&gt; sent an image: {url}", None)
+                        self.chat.comm.print_to_console.emit("", pixmap)
+                    else:
+                        self.chat.comm.print_to_console.emit(f"<p style='color: #ff5555;'>[{timestamp}] &lt;{username}&gt; sent an image but it failed to load (error {image_req.status_code})</p>", None)
+                except Exception as e:
+                    self.chat.comm.print_to_console.emit("Failed to load image.", None)
+                    log(f"Image load error: {e}")
+            else:
+                html = markdown_to_html(content.strip())
+                self.chat.comm.print_to_console.emit(f"[{timestamp}] &lt;{username}&gt;", None)
+                self.chat.comm.print_to_console.emit(html, None)
+            self.progress.setValue(self.idx + 1)
+            log(f"loaded message {self.idx}")
+            QCoreApplication.processEvents()
+
+        self.close()
+
+class ChatInput(QTextEdit):
+    enter_pressed = pyqtSignal()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if event.modifiers() == Qt.ShiftModifier:
+                super().keyPressEvent(event) # allow newline
+            else:
+                event.accept()
+                self.enter_pressed.emit() # emit signal to send message
+        else:
+            super().keyPressEvent(event)
+
+class ChatClient(QMainWindow):
+    def __init__(self):
+        super().__init__()
+
+        self.websocket = None
+        self.loop = asyncio.new_event_loop()
+        self.shutdown_flag = False
+
+        self.comm = Communicator()
+        self.comm.print_to_console.connect(self.print_to_console)
+        self.comm.load_messages.connect(self.show_loading_window)
+        self.comm.show_conf.connect(self.show_config_window)
+        
+        
+        self.init_ui()
+        
+        self.comm.clear_console.connect(self.console.clear)
+
+        threading.Thread(target=self.start_asyncio_loop, daemon=True).start()
+
+    def show_loading_window(self, messages):
+        self.loading_window = LoadingWindow(messages, self)
+        self.loading_window.show()
     
-    log("Client exited")
+    def show_config_window(self):
+        self.conf_window = ConfigWindow(self)
+        self.conf_window.show()
 
-    root.quit()
-    os._exit(0)
-    
-async def retrieve_messages():
-    data = {
-        "username": username,
-        "message": "RAW:MSGDB",
-        "event": "request",
-        "type": "msg"
-        }
-    await websocket.send(json.dumps(data))
-    messages = await websocket.recv()
-    messages = json.loads(messages)
-    log(f"Retrieved {len(messages)} messages from server")
-    load_messages(messages)
+    def init_ui(self):
+        self.setWindowTitle(f"GIchat Client {CLI_VERSION}")
+        self.setStyleSheet("background-color: #000000; color: white")
+        self.setGeometry(100, 100, 900, 500)
+        self.setWindowIcon(QIcon("assets/images/GIchat_Icon.ico"))
 
-async def connect():
-    global websocket
-    global username
-    uri = "ws://" + host + ":" + str(port)
-    try:
-        consoleprint("Connecting...")
-        websocket = await websockets.connect(uri)
-    except Exception as e:
-        messagebox.showerror(title="Connection Error", message=e)
-        consoleprint(f"Failed to connect: {e}")
+        self.console = QTextEdit(self)
+        self.console.setReadOnly(True)
+        self.console.setFont(QFont(CLI_CONFIG["client"]["font"]["name"], CLI_CONFIG["client"]["font"]["size"]))
+        self.console.setStyleSheet("background-color: #232323; color: white")
+
+        self.message_input = ChatInput(self)
+        self.message_input.setFixedHeight(50)
+        self.message_input.setStyleSheet("background-color: #232323; color: white")
+        self.message_input.enter_pressed.connect(self.send_message)
+        
+        self.server_status_label = QLabel("Offline", self)
+        self.server_status_label.setStyleSheet("background-color: #000000; color: white")
+        
+        self.server_status_dot = QLabel()
+        self.server_status_dot.setFixedSize(10, 10)
+        self.server_status_dot.setStyleSheet("background-color: red; border-radius: 5px;")
+
+        send_button = QPushButton(">", self)
+        send_button.clicked.connect(self.send_message)
+        send_button.setFixedWidth(50)
+        send_button.setStyleSheet("background-color: #424242; color: white; border-radius: 1px; padding: 8px 10px;")
+
+        file_button = QPushButton("Send\nImage", self)
+        file_button.clicked.connect(self.send_file)
+        file_button.setStyleSheet("background-color: #424242; color: white; border-radius: 1px; padding: 8px 10px;")
+
+        ping_button = QPushButton("Ping", self)
+        ping_button.clicked.connect(self.ping_server)
+        ping_button.setStyleSheet("background-color: #424242; color: white; border-radius: 1px; padding: 8px 10px;")
+
+        clear_button = QPushButton("Clear", self)
+        clear_button.clicked.connect(lambda: self.console.clear())
+        clear_button.setStyleSheet("background-color: #424242; color: white; border-radius: 1px; padding: 8px 10px;")
+
+        disconnect_button = QPushButton("Disconnect", self)
+        disconnect_button.clicked.connect(lambda: asyncio.run_coroutine_threadsafe(self.disconnect(reason="client"), self.loop))
+        disconnect_button.setStyleSheet("background-color: #424242; color: white; border-radius: 1px; padding: 8px 10px;")
+
+        reconnect_button = QPushButton("Reconnect", self)
+        reconnect_button.clicked.connect(lambda: asyncio.run_coroutine_threadsafe(self.reconnect(), self.loop))
+        reconnect_button.setStyleSheet("background-color: #424242; color: white; border-radius: 1px; padding: 8px 10px;")
+
+        # Layouts
+        button_layout = QVBoxLayout()
+        button_layout.addWidget(ping_button)
+        button_layout.addWidget(disconnect_button)
+        button_layout.addWidget(reconnect_button)
+        button_layout.addWidget(clear_button)
+        button_layout.addWidget(file_button)
+
+        message_layout = QHBoxLayout()
+        message_layout.addWidget(self.message_input)
+        message_layout.addWidget(send_button)
+
+        main_layout = QHBoxLayout()
+        main_layout.addLayout(button_layout)
+        main_layout.addWidget(self.console)
+        
+        status_layout = QHBoxLayout()
+        status_layout.addWidget(self.server_status_dot)
+        status_layout.addWidget(self.server_status_label)
+        status_layout.addStretch()
+
+        central_widget = QWidget()
+        central_layout = QVBoxLayout()
+        central_layout.addLayout(status_layout)
+        central_layout.addLayout(main_layout)
+        central_layout.addLayout(message_layout)
+        central_widget.setLayout(central_layout)
+
+        self.setCentralWidget(central_widget)
+
+        # Menu bar
+        menubar = QMenuBar(self)
+        options_menu = menubar.addMenu("Options")
+
+        credits_action = QAction("Credits", self)
+        credits_action.triggered.connect(lambda: QMessageBox.information(self, "Credits",
+                                                                         "Made by GI\nWritten in Python 3.10 with PyQt5"))
+        options_menu.addAction(credits_action)
+        
+        bugreport_action = QAction("Report bug", self)
+        bugreport_action.triggered.connect(lambda: webbrowser.open("https://github.com/HazmatPants/GIchat-client-2.0/issues/new"))
+        
+        options_menu.addAction(bugreport_action)
+        
+        conf_action = QAction("Settings", self)
+        conf_action.triggered.connect(self.comm.show_conf.emit)
+        
+        options_menu.addAction(conf_action)
+
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(lambda: asyncio.run_coroutine_threadsafe(self.client_exit(), self.loop))
+        options_menu.addAction(exit_action)
+
+        self.setMenuBar(menubar)
+
+    def print_to_console(self, text, image=None):
+        cursor = self.console.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.console.setTextCursor(cursor)
+
+        if image and isinstance(image, QPixmap):
+            image_id = str(uuid.uuid4())  # unique ID per image
+            self.console.insertPlainText("\n")
+            self.console.document().addResource(
+                QTextDocument.ImageResource,
+                QUrl(image_id),
+                image
+            )
+            cursor.insertImage(image_id)
+            self.console.insertPlainText("\n")
+        elif isinstance(image, str):
+            self.console.insertHtml(f'<img src="{image}" width="200">')
+
+        if text:
+            self.console.insertHtml(text + "<br>")
+
+        self.console.moveCursor(QTextCursor.End)
+
     
-    try:
-        await websocket.send(username)
-    except AttributeError:
-        log("Failed to send username to server")
-        consoleprint("Failed to send username to server")
-    try:
-        srv_info_raw = await websocket.recv()
-        srv_info = json.loads(srv_info_raw)
-        log(f"Connected to {uri}")
+    def clear_console(self):
+        self.comm.clear_console.emit()
+    
+    async def retrieve_messages(self):
         data = {
             "username": username,
-            "message": "RAW:USERLIST",
+            "message": "RAW:MSGDB",
             "event": "request",
             "type": "msg"
+        }
+        await self.websocket.send(json.dumps(data))
+        log("Requesting message DB from server...")
+
+        messages = await self.websocket.recv()
+        messages = json.loads(messages)
+        log(f"Retrieved {len(messages)} messages from server")
+
+        self.comm.load_messages.emit(messages)
+
+    def ping_server(self):
+        responsetime = ping(host)
+        if responsetime:
+            QMessageBox.information(self, "Ping Successful",
+                                    f"Response Time: {round(responsetime * 1000, 2)}ms")
+        else:
+            QMessageBox.critical(self, "Ping Failed", "Host unreachable")
+
+    def start_asyncio_loop(self):
+        asyncio.set_event_loop(self.loop)
+        try:
+            self.loop.run_until_complete(self.connect())
+        except ConnectionRefusedError:
+            QMessageBox.critical(self, "Connection Error", "Connection Refused")
+        while not self.shutdown_flag:
+            self.loop.run_forever()
+
+    async def connect(self):
+        uri = f"ws://{host}:{port}"
+        try:
+            self.websocket = await websockets.connect(uri)
+            await self.websocket.send(username)
+            server_info = await self.websocket.recv()
+            server_info = json.loads(server_info)
+            playeventsound("connect")
+            data = {
+                "username": username,
+                "message": "RAW:USERLIST",
+                "event": "request",
+                "type": "msg"
             }
-        await websocket.send(json.dumps(data))
-        online_users = await websocket.recv()
-        online_users = json.loads(online_users)
-        await retrieve_messages()
-        consoleprint(f"Connected to {srv_info['name']} ({uri})\nThis server is running version {srv_info['version']}")
-        if type(online_users) == list:
-            users = ", ".join(online_users)
-            consoleprint("Online Users: " + users)
-        else:
-            consoleprint("No one is here...")
-        log(f"Retrieved user list")
-        playeventsound("connect")
-        await receive_messages()
-    except json.JSONDecodeError:
-        log(f"Received invalid JSON from server: {srv_info_raw}")
-        consoleprint("Failed to connect: " + srv_info_raw)
-    except AttributeError:
-        log(f"Failed to get server info")
-        consoleprint("Failed to get server info")
+            await self.websocket.send(json.dumps(data))
+            log(f"Requesting user list from server...")
+            online_users = await self.websocket.recv()
+            online_users = json.loads(online_users)
+            log(f"Retrieved user list")
+            await self.retrieve_messages()
+            self.comm.print_to_console.emit(f"Connected to &quot;{server_info['name']}&quot; ({uri})", None)
+            if type(online_users) == list:
+                users = ", ".join(online_users)
+                self.comm.print_to_console.emit("Online Users: " + users + "<br>", None)
+            self.server_status_label.setText(f"Connected to \"{server_info['name']}\" ({uri})")
+            self.server_status_dot.setStyleSheet("background-color: #00ff00; border-radius: 5px;")
+            await self.receive_messages()
+        except Exception as e:
+            self.comm.print_to_console.emit(f"<p style='color: #ff5555;'> Connection failed: {e}</p>", None)
+            traceback.print_exc()
+            playerror()
 
-async def reconnect():
-    global websocket, loop
-    consoleprint("Attempting to reconnect...")
-    log("Reconnection attempt...")
+    async def disconnect(self, reason: str):
+        if self.websocket:
+            try:
+                await self.websocket.close(reason="Client Disconnect")
+            except Exception as e:
+                log(f"WebSocket close error: {e}")
+            self.websocket = None
+            if reason == "client":
+                playeventsound("disconnect")
+            elif reason == "kick":
+                playeventsound("kicked")
+            self.comm.print_to_console.emit("Disconnected.", None)
+            self.server_status_label.setText("Offline")
+            self.server_status_dot.setStyleSheet("background-color: red; border-radius: 5px;")
 
-    if websocket:
-        await websocket.close()
+    async def reconnect(self):
+        self.comm.print_to_console.emit("Reconnecting...", None)
+        await self.disconnect(reason="reconnect")
+        await self.connect()
 
-    try:
-        await connect()
-    except Exception as e:
-        log(f"Reconnection failed: {e}")
-        consoleprint(f"Reconnection failed: {e}")
+    async def client_exit(self):
+        self.shutdown_flag = True
+        await self.disconnect(reason="client")
+        log("Client exited")
+        self.close()
+        os._exit(0)
 
-def console_clear():
-    text_console.config(state=tk.NORMAL)
-    text_console.delete(1.0, tk.END)
-    text_console.config(state=tk.DISABLED)
+    def send_message(self):
+        msg = self.message_input.toPlainText().strip()
+        if msg:
+            self.message_input.clear()
+            asyncio.run_coroutine_threadsafe(self._send_message(msg), self.loop)
 
-def direct_connect_prompt():
-    window = tk.Toplevel(root)
-    window.title("Direct Connect")
-    window.geometry("200x150")
-    window.configure(bg="black")
-    window.attributes("-topmost", True)
-    window.resizable(False, False) 
-    window.grab_set()
-    
-    label_host = tk.Label(window, text="Host (IP)", bg="black", fg="#ffffff")
-    entry_host = tk.Entry(window, bg="#232323", fg="#ffffff")
-    label_port = tk.Label(window, text="Port", bg="black", fg="#ffffff")
-    entry_port = tk.Entry(window, bg="#232323", fg="#ffffff")
-    
-    def direct_connect():
-        if type(str(entry_host.get())) == str:
-            if type(int(entry_port.get())) == int:
-                global host, port
-                host = str(entry_host.get())
-                port = int(entry_port.get())
-                asyncio.run_coroutine_threadsafe(reconnect(), loop)
-                window.destroy()
-            else:
-                messagebox.showerror(title="Invalid Config", message="Port must be an integer")
-        else:
-            messagebox.showerror(title="Invalid Config", message="Host must be a string")
-
-    label_host.pack()
-    entry_host.pack()
-    label_port.pack()
-    entry_port.pack()
-    
-    button_connect = tk.Button(window, text="Connect", width=8, bg="#232323", fg="#ffffff",
-                               command=direct_connect)
-    button_connect.pack(pady=16)
-
-root.protocol("WM_DELETE_WINDOW", lambda: asyncio.run_coroutine_threadsafe(client_exit(), loop))
-
-menu_info = tk.Menu(menubar, tearoff=0)
-menu_info.add_command(label="Credits", command=showcredits)
-menu_info.add_command(label="Settings", command=open_config)
-menu_info.add_command(label="Exit", command=lambda: asyncio.run_coroutine_threadsafe(client_exit(), loop))
-menubar.add_cascade(label="Options", menu=menu_info)
-
-# Frame to hold buttons
-frame_button = tk.Frame(root, bg="black")
-frame_button.grid(row=0, column=0, padx=5, pady=5, sticky="ns")
-
-client_icon = Image.open("assets/images/GIchat_Logo.png").resize((64, 64))
-photo_icon = ImageTk.PhotoImage(client_icon)
-root.iconbitmap("assets/images/GIchat_Icon.ico")
-label_icon = tk.Label(frame_button, image=photo_icon, bg="black")
-label_icon.pack()
-
-button_ping = tk.Button(frame_button, text="Ping", width=8, bg="#232323", fg="#ffffff", command=pingserver)
-
-text_console = tk.Text(root, width=90, height=10, bg="#232323", fg="#ffffff")
-
-button_ping.pack(pady=2)
-
-button_disconnect = tk.Button(frame_button, text="Disconnect", width=8, bg="#232323", fg="#ffffff",
-                              command=lambda: asyncio.run_coroutine_threadsafe(disconnect(), loop))
-button_disconnect.pack(pady=2)
-
-button_reconnect = tk.Button(frame_button, text="Reconnect", width=8, bg="#232323", fg="#ffffff",
-                             command=lambda: asyncio.run_coroutine_threadsafe(reconnect(), loop))
-button_reconnect.pack(pady=2)
-
-button_clear = tk.Button(frame_button, text="Clear", width=8, bg="#232323", fg="#ffffff", command=console_clear)
-button_clear.pack(pady=2)
-
-button_directconn = tk.Button(frame_button, text="Direct\nConnect", width=8, bg="#232323", fg="#ffffff", command=direct_connect_prompt)
-button_directconn.pack(pady=2)
-
-text_console.grid(row=0, column=1, pady=5, columnspan=2, sticky="nsew")
-text_console.config(state=tk.DISABLED)
-
-text_console.configure(font=(CLI_CONFIG["client"]["font"]["name"], CLI_CONFIG["client"]["font"]["size"]))
-
-messagefield = tk.Text(root, bg="#232323", fg="#ffffff", height=2)
-messagefield.grid(row=3, column=1, columnspan=1, pady=5, sticky="ew")
-
-FOCUSED = True
-
-def on_focus_in(event):
-    global FOCUSED
-    FOCUSED = True
-
-def on_focus_out(event):
-    global FOCUSED
-    FOCUSED = False
-
-root.bind("<FocusIn>", on_focus_in)
-root.bind("<FocusOut>", on_focus_out)
-
-async def sendmessage():
-    global websocket, CLI_CONFIG
-    message = messagefield.get("1.0", tk.END).strip()
-    if len(message) > 2500:
-        consoleprint("<server> message is too long.")
-        return
-    messagefield.delete("1.0", tk.END)
-    if message:
-        if not "admin_key" in CLI_CONFIG["client"]:
-            CLI_CONFIG["client"]["admin_key"] = " "
-        message_data = {
+    async def _send_message(self, msg):
+        data = {
             "type": "msg",
             "username": username,
-            "message": message,
+            "message": msg,
             "event": "send_message",
-            "admin_key": CLI_CONFIG["client"]["admin_key"]
-            }
-        
-        message_json = json.dumps(message_data)
-        
-        if websocket and websocket.open:
-            log("client sending message...")
-            await websocket.send(message_json)
-            log("client sent message")
+            "admin_key": CLI_CONFIG["client"].get("admin_key", " ")
+        }
+
+        if self.websocket and self.websocket.open:
+            await self.websocket.send(json.dumps(data))
             playeventsound("send_message")
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            root.after(0, consoleprint, f"[{timestamp}] <{username}> {message}")
-        else:
-            consoleprint("Error: Not connected to a server")
+            if msg.startswith("[Image] http"):
+                url = msg.split(" ", 1)[1]
+                self.comm.print_to_console.emit(f"[{timestamp}] &lt;{username}&gt; sent an image: {url}", None)
+                try:
+                    response = requests.get(url)
+                    response.raise_for_status()
+                    image_data = response.content
+                    pixmap = QPixmap()
+                    pixmap.loadFromData(image_data)
+                    pixmap = pixmap.scaledToWidth(300, Qt.SmoothTransformation)
+                    self.comm.print_to_console.emit("", pixmap)
+                except Exception as e:
+                    self.comm.print_to_console.emit("Failed to load image.", None)
+                    log(f"Image load error (sender): {e}")
+            else:
+                self.comm.print_to_console.emit(f"[{timestamp}] &lt;{username}&gt;", None)
+                msg_html = markdown_to_html(msg)
+                self.comm.print_to_console.emit(msg_html, None)
 
-async def sendfile():
-    global websocket
-    file = filedialog.askopenfilename(title="Select a file", filetypes=[("Image files", "*.png;*.jpg;*.jpeg")])
-    if file:
-        message = b64encode(file)
-        message_data = {
-            "type": "file",
-            "username": username,
-            "data": message,
-            "filename": os.path.basename(file),
-            "event": "send_message"
-            }
-        
-        message_json = json.dumps(message_data)
-        
-        timestamp = time.time()
-        
-        if websocket and websocket.open:
-            log("client sending file...")
-            await websocket.send(message_json)
-            log(f"client sent file {os.path.basename(file)}")
-            playeventsound("send_message")
-            photo = Image.open(file).convert("RGB")
-            photo.thumbnail((500, 500))
-            photo = ImageTk.PhotoImage(photo)
+    def send_file(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select a file", "", "Image files (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.xpm *.ico)")
+        if file_path:
+            files = {'file': open(file_path, 'rb')}
+            response = requests.post(f"http://{host}:8000/upload", files=files)
+            if response.ok:
+                filename = response.json()['filename']
+                msg = f"[Image] http://{host}:8000/uploads/{filename}"
+                asyncio.run_coroutine_threadsafe(self._send_message(msg), self.loop)
 
-            text_console.photo_ref = photo
-            
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            consoleprint(f"[{timestamp}] <{username}> sent an image")
-            text_console.image_create(tk.END, image=photo)
-            consoleprint("\n")
-        else:
-            consoleprint("Error: Not connected to a server")
+    async def receive_messages(self):
+        try:
+            async for message in self.websocket:
+                try:
+                    data = json.loads(message)
+                    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    if data["event"] == "srv_message":
+                        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        self.comm.print_to_console.emit(f"[{timestamp}] &lt;{data['username']}&gt;", None)
+                        self.comm.print_to_console.emit(data['message'] + "<br>", None)
+                        if "join" in data['message']:
+                            playeventsound("user_join")
+                        elif "left" in data['message']:
+                            playeventsound("user_leave")
+                        elif "have been kicked" in data['message']:
+                            await self.disconnect("kick")
+                    elif data["event"] == "srv_command":
+                        if data['message'] == "CLEAR_MESSAGE_DB":
+                            self.comm.clear_console.emit()
+                            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            self.comm.print_to_console.emit(f"[{timestamp}] &lt;server&gt;", None)
+                            self.comm.print_to_console.emit("Message DB was cleared.", None)
+                    else:
+                        if data["type"] == "msg" and not data["event"] == "request":
+                            message = data['message']
+                            if message.startswith("[Image] http"):
+                                url = message.split(" ", 1)[1]
+                                try:
+                                    image_data = requests.get(url).content
+                                    pixmap = QPixmap()
+                                    pixmap.loadFromData(image_data)
+                                    pixmap = pixmap.scaledToWidth(300, Qt.SmoothTransformation)
+                                    self.comm.print_to_console.emit(f"[{timestamp}] &lt;{data['username']}&gt; sent an image: {url}", pixmap)
+                                except Exception as e:
+                                    self.comm.print_to_console.emit("Failed to load image.", None)
+                                    log(f"Image load error: {e}")
+                            elif message.startswith("[File] http"):
+                                url = message.split(" ", 1)[1]
+                                self.comm.print_to_console.emit(f"[{timestamp}] &lt;{data['username']}&gt; sent an file: {url}")
+                            else:
+                                msg_html = markdown_to_html(data['message'])
+                                self.comm.print_to_console.emit(f"[{timestamp}] &lt;{data['username']}&gt;", None)
+                                self.comm.print_to_console.emit(msg_html, None)
+                            
+                        playeventsound("rcv_message")
+                except json.JSONDecodeError:
+                    self.comm.print_to_console.emit("Received invalid JSON", None)
+                except Exception as e:
+                    log(f"Error occurred when receiving a message: {e}")
+        except websockets.exceptions.ConnectionClosed:
+            self.comm.print_to_console.emit("Connection closed.", None)
 
-def send_click(event=None):
-    asyncio.run_coroutine_threadsafe(sendmessage(), loop)
-    return "break"
 
-def insert_new_line(event=None):
-    messagefield.insert(tk.INSERT, "\n")
-    return "break"
-
-messagefield.bind("<Return>", send_click)
-messagefield.bind("<Shift-Return>", insert_new_line)
-
-async def receive_messages():
-    global websocket
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
     try:
-        async for message in websocket:
-            try:
-                message_data = json.loads(message)
-                print(message_data)
-                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            except json.JSONDecodeError:
-                consoleprint("Received invalid data: " + message)
-            if message_data["type"] == "msg":
-                if message_data["event"] == "srv_message":
-                    if "joined" in message_data["message"]:
-                        playeventsound("user_join")
-                    elif "left" in message_data["message"]:
-                        playeventsound("user_leave")
-                    consoleprint(message_data["message"])
-                elif message_data["event"] == "send_message":
-                    playeventsound("rcv_message")
-                elif message_data["event"] == "srv_command":
-                    if message_data["message"] == "RAW:CLRMSG":
-                        await retrieve_messages()
-                else:
-                    consoleprint(f"[{timestamp}] <{message_data['username']}> {message_data['message']}")
-            elif message_data["type"] == "file":
-                with open(message_data["filename"], "wb") as f:
-                    f.write(b64decode(message_data["data"]))
-                photo = Image.open(message_data["filename"]).resize((256, 256))
-                photo = ImageTk.PhotoImage(photo)
-                root.after(0, consoleprint, f"[{timestamp}] <{message_data['username']}> sent an image", photo)
-                os.remove(message_data["filename"])
-
-    except websockets.exceptions.ConnectionClosed as e:
-        consoleprint(f"Connection to server closed: {e}")
-        log(f"Connection to server closed: {e}")
-
-def start_asyncio_loop():
-    global loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(connect())
-    except ConnectionRefusedError:
-        tk.messagebox.showerror(title="Failed to connect...", message="Error: Connection Refused")
-    while not shutdown_flag:
-        loop.run_forever()
-
-button_file = tk.Button(root, width=8, text="Send\nImage", bg="#232323", fg="#ffffff",
-                        command=lambda: asyncio.run_coroutine_threadsafe(sendfile(), loop))
-button_file.grid(row=3, column=0)
-
-button_send = tk.Button(root, width=5, text=">", bg="#232323", fg="#ffffff",
-                        command=send_click)
-button_send.grid(row=3, column=2)
-
-asyncio_thread = threading.Thread(target=start_asyncio_loop, daemon=True)
-asyncio_thread.start()
-
-root.mainloop()
+        CLI_CONFIG = load_config()
+        username = CLI_CONFIG["client"]["username"]
+        host = CLI_CONFIG["server"]["host"]
+        port = CLI_CONFIG["server"]["port"]
+    except Exception as e:
+        QMessageBox.critical(None, "Config Error", str(e))
+        sys.exit(1)
+    window = ChatClient()
+    window.show()
+    sys.exit(app.exec_())

@@ -1,5 +1,26 @@
-# GI.chat Client 1.0 - Deprecated
+# GIchat Client 2.0
+Used to connect to [GIchat servers](https://github.com/HazmatPants/GIchat-server)
 
-GI.chat Client 1.0 is now deprecated. This version relies on Tkinter for the user interface, which offers limited customization compared to GI.chat Client 2.0, which uses PyQt for enhanced flexibility and customization options.
+A lightweight chat client for GIchat. Built with PyQt5, WebSockets and Flask (HTTP).
 
-As of now, GI.chat Client 1.0 will no longer receive updates, bug fixes, or new features. It is recommended that you transition to GI.chat Client 2.0 for an improved experience and continued support.
+# Features
+- Customizable sounds
+- Markdown support
+- HTML formatting support
+- File sharing
+
+# To-do's
+- Customizable styling
+- GUI user list
+
+## Potential new features
+> these may or may not be added
+- Profile pictures
+- GIF playback
+- Video playback
+- Voice chat
+
+
+# Gallery
+![alt text](https://hazmatpants.github.io/images/gichat_funny.png)
+![alt text](https://hazmatpants.github.io/images/gichat_images.png)
